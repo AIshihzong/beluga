@@ -3,10 +3,12 @@ import { chmod, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { type PtyProcess, type TerminalManager, listShells, scriptShell } from '../terminal/index.js';
-import { type ShellChoice, shellArgs } from '../shared/shells.js';
+import { type PtyProcess, type TerminalManager, defaultShell, listShells, scriptShell } from '../terminal/index.js';
+import { type ShellChoice, commandArgs, shellArgs } from '../shared/shells.js';
 import type { EnvPlace } from './env-vars.js';
 import { systemOpen } from './os-open.js';
+import { editorCommand } from './editor-command.js';
+import { tilde } from './paths.js';
 import type { WorkspaceManager } from '../workspaces/manager.js';
 import type { Workspace } from '../workspaces/types.js';
 import { worktreeOrigin } from '../workspaces/origin.js';
@@ -164,6 +166,9 @@ export function fixFailedPrompt(kind: 'setup' | 'run', command: string, code: nu
 export { shellId, setupId, runId, githubId, globalShellId, isGlobalShell, globalShellNumber, globalShellDir } from '../shared/terminal-keys.js';
 import { agentTermId, githubId, runId, setupId, shellId, isGlobalShell, globalShellNumber, cleanTerminalName } from '../shared/terminal-keys.js';
 import { pace, paced } from './power-saver.js';
+
+/** How soon cmd ends when it couldn't find your editor (Windows). */
+const EDITOR_MISSING_MS = 3000;
 
 /**
  * What changed about a pull request that's worth telling you. A PR showing up is only news
@@ -1048,12 +1053,36 @@ export class Workbench {
   /** Open your PR instructions in your editor (created with the built-in text the first time). */
   editPrPrompt(): void {
     const file = ensurePrPromptFile();
+    const opened = (): void => {
+      this.deps.store.dispatch({ type: 'pr_custom', custom: true });
+      this.deps.toast(`Opened ${tilde(file)}. Save it; the next PR uses it`, 'success');
+    };
+    // The system's own way to open it: when there's no editor to start, or yours didn't start.
+    const openHere = (): void => {
+      (this.deps.open ?? systemOpen)(file);
+      opened();
+    };
     const editor = process.env.VISUAL ?? '';
-    if (/\b(code|cursor|subl|zed|mate|gedit|kate)\b/.test(editor)) spawn(editor, [file], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref();
-    else if (process.platform === 'darwin') spawn('open', ['-t', file], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref();
-    else (this.deps.open ?? systemOpen)(file);
-    this.deps.store.dispatch({ type: 'pr_custom', custom: true });
-    this.deps.toast(`Opened ${file.replace(process.env.HOME ?? '', '~')}. Save it; the next PR uses it`, 'success');
+    if (/\b(code|cursor|subl|zed|mate|gedit|kate)\b/.test(editor)) {
+      const how = editorCommand(editor, file);
+      const child = spawn(how.command, [...how.args], { stdio: 'ignore', detached: true, shell: how.shell, windowsHide: true });
+      child.once('spawn', opened);
+      child.once('error', openHere);
+      // Through cmd (Windows) it always starts: cmd ending at once with an error means the editor
+      // wasn't found, so the system opens it. (An editor run with --wait ends much later.)
+      if (how.shell) {
+        const started = Date.now();
+        child.once('exit', (code) => {
+          if (code !== 0 && Date.now() - started < EDITOR_MISSING_MS) (this.deps.open ?? systemOpen)(file);
+        });
+      }
+      child.unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', ['-t', file], { stdio: 'ignore', detached: true })
+        .once('spawn', opened)
+        .once('error', openHere)
+        .unref();
+    } else openHere();
   }
 
   resetPrPrompt(): void {
@@ -1079,7 +1108,8 @@ export class Workbench {
       rows: size.rows,
       env,
       ...(shell ? { shell } : {}),
-      ...(command ? { args: ['-l', '-c', command], title: command } : { args: shellArgs({ login: prefs.shellLogin, extra: prefs.shellArgs }) }),
+      // PowerShell and cmd (Windows) take neither -l nor -c: each shell gets the arguments it knows.
+      ...(command ? { args: commandArgs(shell ?? defaultShell(), command), title: command } : { args: shellArgs({ login: prefs.shellLogin, extra: prefs.shellArgs, shell: shell ?? defaultShell() }) }),
     });
     this.deps.store.dispatch({ type: 'terminal', id: key, title: session.title });
     // A setup is over in a moment: only shells and the run command are worth a restart later.

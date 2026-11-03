@@ -33,6 +33,7 @@ import { useCheckerChat, useConversationLoaded, usePlanActions, usePlanStep, use
 import p from './plans.module.css';
 import { TeamReviews, usePlanTeamItems } from '../team/SharedPlans.js';
 import { shortcutKeys } from '../lib/shortcuts.js';
+import { revealLabel } from '../lib/os-words.js';
 
 const PlanCanvas = lazy(() => import('./PlanCanvas.js'));
 
@@ -293,7 +294,7 @@ function Page({ view, prefs, setPrefs, picked, setPicked }: { view: PlanView; pr
         ]
       : []),
     ...(conflictWaits && primary?.run !== askAgain ? [{ label: `Ask ${who} Again`, onSelect: askAgain }] : []),
-    ...(conflictHere ? [{ label: 'Show Conflict in Finder', onSelect: () => void act(() => api.showConflict(plan.id)) }] : []),
+    ...(conflictHere ? [{ label: revealLabel('Conflict'), onSelect: () => void act(() => api.showConflict(plan.id)) }] : []),
     ...(plan.status === 'active' ? [taskChatsItem(plan.id, uiPrefs)] : []),
     ...teamItems,
     { label: 'Copy as Markdown', separate: true, onSelect: () => void copyText(markdownOf(view)) },

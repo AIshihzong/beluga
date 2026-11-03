@@ -1,3 +1,4 @@
+import { baseName, sepOf } from '@beluga/shared/os-path.js';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../components/Icon.js';
@@ -8,6 +9,7 @@ import { inApp } from '../lib/boot.js';
 import { useApi, useApp, useBeluga, useUi } from '../lib/beluga.js';
 import { pickFolders } from '../lib/projects.js';
 import s from './add-project.module.css';
+import { thisComputer } from '../lib/os-words.js';
 
 interface Found {
   readonly path: string;
@@ -96,7 +98,7 @@ export function AddProjectSheet() {
     const known = new Set(roots.split('\n'));
     const q = filter.trim().toLowerCase();
     const listed = new Set((found ?? []).map((f) => f.path));
-    const hiddenOnly = found ? [...hiddenSet, ...revealed].filter((p, i, all) => !listed.has(p) && all.indexOf(p) === i).map((p): Found => ({ path: p, name: p.split('/').filter(Boolean).pop() ?? p, changed: 0 })) : [];
+    const hiddenOnly = found ? [...hiddenSet, ...revealed].filter((p, i, all) => !listed.has(p) && all.indexOf(p) === i).map((p): Found => ({ path: p, name: baseName(p) || p, changed: 0 })) : [];
     return [...hiddenOnly, ...(found ?? [])]
       .filter((f) => !known.has(f.path) || added.has(f.path) || revealed.has(f.path))
       .filter((f) => !q || f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
@@ -154,8 +156,8 @@ export function AddProjectSheet() {
               </div>
 
               <div className={s.listHead}>
-                <span>On this Mac</span>
-                <input ref={filterBox} className={s.filter} value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label="Filter projects on this Mac" />
+                <span>On {thisComputer()}</span>
+                <input ref={filterBox} className={s.filter} value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label={`Filter projects on ${thisComputer()}`} />
               </div>
               <div className={s.list} role="list">
                 {found === undefined ? (
@@ -262,7 +264,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
     }
   };
 
-  const where = parent ? `${short(parent).replace(/\/$/, '')}/${name.trim() || 'name'}` : undefined;
+  const where = parent ? `${short(parent).replace(/[\\/]+$/, '')}${sepOf(parent)}${name.trim() || 'name'}` : undefined;
   return (
     <form
       className={s.newForm}

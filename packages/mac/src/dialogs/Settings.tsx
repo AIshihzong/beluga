@@ -1,3 +1,4 @@
+import { baseName } from '@beluga/shared/os-path.js';
 import * as Dialog from '@radix-ui/react-dialog';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { TRUST_INFO, trustOf } from '@beluga/core/trust.js';
@@ -41,6 +42,7 @@ import { GITHUB_URL, openSupport } from '../lib/support.js';
 import { openExternal } from '../lib/system.js';
 import { shortcutKeys } from '../lib/shortcuts.js';
 import { keyPlatform } from '../lib/shortcuts-model.js';
+import { cmdReturn, returnName, revealLabel, trayName, yourComputer } from '../lib/os-words.js';
 
 const PANES: ReadonlyArray<{ id: SettingsPane; label: string; icon: IconName }> = [
   { id: 'general', label: 'General', icon: 'gear' },
@@ -50,7 +52,7 @@ const PANES: ReadonlyArray<{ id: SettingsPane; label: string; icon: IconName }> 
   { id: 'workspaces', label: 'Workspaces', icon: 'branch' },
   { id: 'terminal', label: 'Terminal', icon: 'terminal' },
   { id: 'fire', label: 'Fire & Confetti', icon: 'flame' },
-  { id: 'menubar', label: 'Menu Bar', icon: 'laptop' },
+  { id: 'menubar', label: trayName(), icon: 'laptop' },
   { id: 'environment', label: 'Environment', icon: 'lock' },
   { id: 'people', label: 'People & access', icon: 'people' },
   { id: 'phone', label: 'Phone', icon: 'phone' },
@@ -173,8 +175,8 @@ function General() {
             value={prefs.sendWith}
             onChange={(v) => setPrefs({ sendWith: v })}
             options={[
-              { value: 'enter', label: 'Return' },
-              { value: 'cmd-enter', label: '⌘ Return' },
+              { value: 'enter', label: returnName() },
+              { value: 'cmd-enter', label: cmdReturn(' ') },
             ]}
           />
         </Row>
@@ -225,7 +227,7 @@ function Appearance() {
             ]}
           />
         </Row>
-        <Row label="Accent" detail="Selection, focus and buttons. “System” follows your Mac.">
+        <Row label="Accent" detail={`Selection, focus and buttons. “System” follows ${yourComputer()}.`}>
           <div className={s.swatches}>
             {(Object.keys(ACCENTS) as Accent[]).map((a) => (
               <button key={a} type="button" aria-label={a} aria-pressed={prefs.accent === a} className={cx(s.swatch, prefs.accent === a && s.swatchOn)} style={{ background: a === 'system' ? 'conic-gradient(#3b82f6, #8b5cf6, #e11d48, #d97706, #059669, #3b82f6)' : ACCENTS[a] }} onClick={() => setPrefs({ accent: a })} />
@@ -429,8 +431,8 @@ function HiddenProjectsGroup() {
     <Group title="Hidden projects">
       {hidden.length ? (
         hidden.map((root) => (
-          <Row key={root} label={root.split('/').filter(Boolean).pop() ?? root} detail={root}>
-            <Button onClick={() => void api.workspaces.showProject(root)} aria-label={`Show ${root.split('/').filter(Boolean).pop() ?? root}`}>
+          <Row key={root} label={baseName(root) || root} detail={root}>
+            <Button onClick={() => void api.workspaces.showProject(root)} aria-label={`Show ${baseName(root) || root}`}>
               Show
             </Button>
           </Row>
@@ -574,7 +576,7 @@ function About() {
   return (
     <>
       <Group>
-        <Row label="Beluga for Mac">{APP_VERSION}</Row>
+        <Row label="The Beluga app">{APP_VERSION}</Row>
         <UpdateAboutRow />
         <Row label="Beluga (the part that runs your room)">{client.daemonVersion}</Row>
         <Row label="Windows attached" detail="Beluga windows connected to the room right now.">
@@ -585,7 +587,7 @@ function About() {
             Open in Console
           </Button>
           <Button size="small" variant="quiet" onClick={() => void revealInFinder(client, logPath)}>
-            Show in Finder
+            {revealLabel()}
           </Button>
         </Row>
       </Group>
