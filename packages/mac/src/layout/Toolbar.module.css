@@ -18,6 +18,23 @@
 .lead {
   margin-left: -6px;
 }
+/* Back and forward, side by side before the title (as in Finder and Safari). */
+.nav {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-left: -6px;
+}
+.lead + .nav {
+  margin-left: -8px;
+}
+/* Nowhere to go: the arrow is there, quieter, and doesn't light up. */
+.nav button:disabled {
+  opacity: 0.35;
+  background: none;
+  color: var(--text-2);
+  cursor: default;
+}
 .titles {
   min-width: 0;
   flex: 1 1 auto;
