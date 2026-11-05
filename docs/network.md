@@ -353,6 +353,94 @@ the prompt's own sections (`<chat>`, `<message>`, `<file>` in them are defused).
 it reaches you (you were offline) isn't answered, and each is answered once (`~/.beluga/chat-claude.json`).
 If your agent can't answer, you get a notification; the others just see it stop.
 
+## Calls (BLG-706)
+
+Voice, cameras and screen sharing in a DM, a channel or a room, with no call server. The call stays in its
+conversation, and it's the same chat.
+
+- **Setup over the links you already have.** `call` link frames (core/calls, checked there, only
+  between people in that conversation): `ring`, `here` (I'm in it: muted, sharing, joined at; every
+  10 s), `bye`, `decline`, and `sig`, WebRTC setup for one person's window (64 KB at most). Nobody
+  runs a call: each Mac keeps the roster from what it hears and drops whoever was quiet for 32 s.
+  Two people pressing Call at once end up in the same call (the lower id wins on every Mac).
+- **Media goes Mac to Mac.** The window makes the call with WebRTC (packages/mac/src/call): Opus
+  voice with echo cancellation and noise suppression to everyone in it (a mesh), DTLS-SRTP
+  encrypted. Public STUN only finds each Mac's address; there's no TURN yet, so two networks that
+  block UDP can't call each other.
+- **Screen sharing through a tree.** A share is tuned for text (`contentHint: text`, resolution
+  kept before frame rate, H.264 first: the Mac's hardware encodes it). The sharer feeds the first
+  three viewers; each viewer passes it on to at most two more (`shareTree` in shared/calls.ts), so
+  the sharer's upload stays the same however big the call gets. Every Mac draws the same tree from
+  the roster, in join order.
+- **Pointing at it.** The laser, ink that fades after a few seconds and Ask Claude's marked area go
+  as vectors on a WebRTC data channel (fractions of the picture), never through the daemons. Ask
+  Claude puts a snapshot of the share (with the ink on it) in the chat as a question for your own
+  Claude; its answer is a chat message, shown on the stage for everyone in the call.
+- **One window makes your side.** The Mac screen that started or joined it (or the first to say
+  so after you answered from the phone) gets the setup and says it's still there every few
+  seconds. If it goes quiet for 32 s, you leave the call.
+- **Pointing, without tools** (BLG-717). On a shared screen your pointer shows for everyone as you
+  move, a click sends a ripple, and dragging draws. Strokes a moment apart are one sketch (a word,
+  a circle and an arrow); drawing again after a pause clears your old sketch, and left alone it
+  fades by itself. Beside your sketch, Ask your agent sends the part it covers, ink and all, to the
+  chat. The sharer picks Sharp (text) or Smooth (motion) behind •••; Full Screen gives the picture
+  the whole display. Nothing is written over the shared screen while the chat shows beside it.
+- **The chat where it can't be seen.** Full Screen and Face to Face cover the chat, so what the
+  others write from then on pops up on the right, dissolves once there was time to read it, and a
+  line under it answers in the same chat (call/ChatPops.tsx). Messages that were already there
+  never pop up; timing counts from when each message reached this Mac, not its sender's clock.
+- **What can be shared.** Share opens macOS's own picker (WebKit's ScreenCaptureKit picker): one
+  window, or one whole display, any of them with several monitors. A whole app (all its windows)
+  isn't something WebKit's capture offers.
+- **The sharer.** Sharing, you're likely looking at another app, not Beluga. While you are, the
+  floating card says you're sharing, in the call's colour, with Stop, and tucks away for the rest
+  of that share (˄), leaving only the frame; a click-through window
+  covers the shared screen (src-tauri/src/call_overlay.rs) with a soft frame around it, the
+  others' sketches, pointers and clicks where they made them, and what they write in the chat
+  bottom right. Both ask macOS to leave them out of captures (`NSWindowSharingNone`), so the
+  others don't see them. Sharing one window, the frame and the ink stay off (its place on screen
+  isn't known); the chat still pops up. In Beluga, the strip, the stage and the sidebar's pill say
+  you're sharing, and the pill can stop it. In full screen the stage's bar floats over the
+  bottom and steps aside after a couple of seconds without the pointer moving.
+- **Calls of 5–10.** Each Mac measures what it can send (WebRTC's own estimate per line) and says so
+  with `here`; the share tree puts the best uploads closest to the sharer, each feeding as many as
+  its upload carries (one to five), and weak connections only watch (`shareTreeBy`). Each window
+  says how big it shows each camera (face to face or a small collage: big; a tile: small; not on
+  screen: none), and each sender splits its upload by that, sending nothing to whoever doesn't look.
+- **Cameras** (BLG-714). Each camera goes to everyone in the call, smaller as it grows (full size
+  for two, about a third of the bitrate past four). A line says once on the data channel which of
+  its streams is the camera and which the screen. Faces show as a band under the strip, or a
+  filmstrip over a shared screen. Face to Face puts the call over the whole window, like FaceTime:
+  one other person fills it, a group is a collage, and you're a picture you drag to any corner.
+- **Notes** (BLG-715, BLG-718). Nobody records anyone else: each Mac records only its own
+  microphone (the call's echo-cancelled stream), cut at its pauses into phrases, keeping no sound
+  once a phrase is written down. Each phrase is written down by whichever Mac in the call will
+  finish it soonest (shared/scribe-plan.ts): every few seconds each Mac says whether it has a voice
+  model, how fast it writes down, how much waits for it, its CPU load and whether it's on battery
+  (`scribe` on the data channel). Its own Mac when that's close enough (no sound leaves it), else
+  the phrase's WAV goes in parts (`clip`) to the soonest one, which sends the words back
+  (`clip-text`). So someone with no model, or a slow or busy Mac, still gets notes. And not word
+  by word at any cost: with time to spare each phrase is written down at once; busy (load per
+  core over 0.7) or on battery, phrases wait and go together, up to 28 seconds of speech in one
+  go, never waiting more than a minute. As you leave, your words go to the others who were in
+  the call (`notes` frames, accepted only from someone who was in a call you were in); everyone keeps one merged transcript (`~/.beluga/call-notes/<call>.json`), a
+  one-line chip in the chat however long the call was. It opens in a reader beside the chat, made
+  for long calls: your words on the right and everyone else's on the left, search (⌘F), one
+  person's words only, and the call's timeline to jump along. Notes never go into a prompt:
+  agents look them up with tools (server `beluga_calls`, and inside a chat answer `beluga_chat`):
+  `call_notes_list`, `call_notes_search` and `call_notes_read`. Your own runs reach every call you
+  were in; an answer in a chat only that chat's calls, and its prompt only says they exist. Its
+  ••• › Talk About It opens a chat with your own agent that only you see, its message a
+  `call:<id>` chip, never the transcript. Notes need a voice model on at least one Mac in the
+  call: a call never downloads one.
+- **Rooms** (BLG-716). The same calls in a room's chat: `call` bodies sent through the hub to one
+  person at a time (never kept for latecomers), everyone connected and not a guest is in it, and
+  the media still goes Mac to Mac. Its latest notes sit folded on top of the room's chat.
+- **Wherever you are.** In the conversation, a strip under its header; elsewhere in Beluga, a pill
+  at the bottom of the sidebar; with Beluga behind other apps, a small floating card
+  (src-tauri/src/call_float.rs). Someone ringing you is a card at the top of the window with the
+  ringtone, a notification, and a Needs you item on the phone (Answer on Mac, Decline).
+
 ## Tasks between Claudes (the gateway)
 
 Code: `src/core/gateway/` (protocol, the gateway, the receiving side, files), `src/agent/gateway-tools.ts`
