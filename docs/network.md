@@ -379,12 +379,26 @@ conversation, and it's the same chat.
 - **One window makes your side.** The Mac screen that started or joined it (or the first to say
   so after you answered from the phone) gets the setup and says it's still there every few
   seconds. If it goes quiet for 32 s, you leave the call.
-- **Pointing, without tools** (BLG-717). On a shared screen your pointer shows for everyone as you
-  move, a click sends a ripple, and dragging draws. Strokes a moment apart are one sketch (a word,
+- **Pointing, without tools** (BLG-717). On a shared screen a click sends a ripple everyone sees,
+  and dragging draws; your pointer shows only once you choose to (below). Strokes a moment apart are one sketch (a word,
   a circle and an arrow); drawing again after a pause clears your old sketch, and left alone it
-  fades by itself. Beside your sketch, Ask your agent sends the part it covers, ink and all, to the
-  chat. The sharer picks Sharp (text) or Smooth (motion) behind •••; Full Screen gives the picture
-  the whole display. Nothing is written over the shared screen while the chat shows beside it.
+  dissolves a few seconds later by itself. The Box tool (or Shift as you drag) marks a box instead;
+  it goes as a stroke along its sides, so it fades and can be asked about like any sketch. Beside
+  your sketch, Ask your agent sends the part it covers, ink and all, to the chat; the sketch stays up
+  while you type the question. The sharer picks Sharp (text) or Smooth (motion) behind •••; Full
+  Screen gives the picture the whole display. Nothing is written over the shared screen while the
+  chat shows beside it.
+- **Everyone's pointer** (BLG-733). Off until you turn on Show My Pointer in the stage's bar (each
+  share starts with it off). Then your pointer shows for the others as an arrow in your colour with
+  your picture and name, and you see the same mark under your own mouse in place of the usual
+  arrow, so it looks the same on both ends. It's sent 60 times a second on a second data channel,
+  unordered and never resent (only the newest spot counts), once the other Mac says it has one
+  (`pointers` in `streams`); older Macs get it on the stage channel. Each screen glides it to its
+  last spot on a critically damped spring (call/glide.ts), so it moves smoothly however the
+  network delivers.
+- **Microphone and speaker** (BLG-737). The chevron beside Mute picks which microphone and speaker
+  the call uses; a new microphone goes on every line at once, and the choice is kept on this Mac.
+  Picking a speaker needs WebKit's `setSinkId`; without it, macOS's own output is used.
 - **The chat where it can't be seen.** Full Screen and Face to Face cover the chat, so what the
   others write from then on pops up on the right, dissolves once there was time to read it, and a
   line under it answers in the same chat (call/ChatPops.tsx). Messages that were already there
@@ -398,7 +412,10 @@ conversation, and it's the same chat.
   covers the shared screen (src-tauri/src/call_overlay.rs) with a soft frame around it, the
   others' sketches, pointers and clicks where they made them, and what they write in the chat
   bottom right. Both ask macOS to leave them out of captures (`NSWindowSharingNone`), so the
-  others don't see them. Sharing one window, the frame and the ink stay off (its place on screen
+  others don't see them. Since macOS 15, ScreenCaptureKit doesn't always listen, so the overlay
+  first shows a few pixels of two colours in turn in its top-left corner and the sharer's window
+  looks for them in its own capture (call/leak-probe.ts, BLG-736). Found: the overlay stays away
+  for the call (a toast says why), and nobody sees their own pointer or ink twice. Sharing one window, the frame and the ink stay off (its place on screen
   isn't known); the chat still pops up. In Beluga, the strip, the stage and the sidebar's pill say
   you're sharing, and the pill can stop it. In full screen the stage's bar floats over the
   bottom and steps aside after a couple of seconds without the pointer moving.
@@ -419,7 +436,16 @@ conversation, and it's the same chat.
   model, how fast it writes down, how much waits for it, its CPU load and whether it's on battery
   (`scribe` on the data channel). Its own Mac when that's close enough (no sound leaves it), else
   the phrase's WAV goes in parts (`clip`) to the soonest one, which sends the words back
-  (`clip-text`). So someone with no model, or a slow or busy Mac, still gets notes. And not word
+  (`clip-text`). So someone with no model, or a slow or busy Mac, still gets notes.
+  **The best model, one language** (BLG-738): each Mac also says which voice models it has, and a
+  phrase goes to the best one in the call for its language (Whisper Turbo over Parakeet, which
+  doesn't know Turkish; a lesser model only when the best is far behind), its own Mac when that's
+  among the best. Each Mac counts how many seconds of its phrases came out in which language and
+  says so too (`langs`); once one language clearly leads across the call (8 s heard, 60% of it),
+  every phrase is written down in it (`lang` on `clip`), so a short Turkish phrase can't come out
+  as Russian, and the early phrases that came out in another language are written down again. A
+  language set in Settings › Voice always wins for your own words. The Notes button says which
+  model writes on which Mac, and the call's language once it settled. And not word
   by word at any cost: with time to spare each phrase is written down at once; busy (load per
   core over 0.7) or on battery, phrases wait and go together, up to 28 seconds of speech in one
   go, never waiting more than a minute. As you leave, your words go to the others who were in

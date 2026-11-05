@@ -4,10 +4,12 @@ import { type CallView, type ShareMode, type StageMessage, CLIP_PART, HEARTBEAT_
 import { inApp } from '../lib/boot.js';
 import { Levels } from './levels.js';
 import { type CameraSize, type LineState, Peer } from './peer.js';
-import { demoCamera, demoScreen, demoVoice } from './demo-media.js';
+import { demoCamera, demoPointer, demoScreen, demoVoice } from './demo-media.js';
 import { repeat } from './repeat.js';
-import { type NotePhrase, Scribe, demoPhrases, scribeReady } from './scribe.js';
-import { type ScribeStatus, pickScribe } from '@beluga/shared/scribe-plan.js';
+import { type NotePhrase, Scribe, type Words, demoPhrases, scribeModels } from './scribe.js';
+import { type ScribeStatus, bestModel, pickScribe } from '@beluga/shared/scribe-plan.js';
+import type { LanguageCount } from '@beluga/shared/call-language.js';
+import type { VoiceModelId } from '@beluga/shared/voice-models.js';
 
 /**
  * Your side of a call, made in this window (BLG-706). The daemon says who's in the call
@@ -44,9 +46,11 @@ export interface CallLive {
   readonly faces: boolean;
   /** Your words go in the call's notes (`off`: you paused it; `none`: nobody in the call has a voice model). */
   readonly notes: 'on' | 'off' | 'none';
+  /** Who writes the notes down with which model (peer ids, yours too), and the call's language once it settled (BLG-738). */
+  readonly scribing: { readonly writers: Readonly<Record<string, VoiceModelId>>; readonly language?: string };
 }
 
-const EMPTY: CallLive = { speaking: new Set(), lines: {}, asks: [], cameras: {}, mode: 'sharp', theater: false, faces: false, notes: 'none' };
+const EMPTY: CallLive = { speaking: new Set(), lines: {}, asks: [], cameras: {}, mode: 'sharp', theater: false, faces: false, notes: 'none', scribing: { writers: {} } };
 
 /** A picture from someone: its track, and whether frames are coming. */
 interface Incoming {
@@ -80,12 +84,17 @@ export class CallEngine {
   /** How each Mac in the call does as a scribe (they say so every few seconds, BLG-718). */
   private readonly scribes = new Map<string, ScribeStatus>();
   /** Your phrases out at other Macs, waiting for their words; others' phrases arriving in parts. */
-  private readonly clipsOut = new Map<string, (text: string | undefined) => void>();
-  private readonly clipsIn = new Map<string, { parts: string[]; seconds: number }>();
+  private readonly clipsOut = new Map<string, (words: Words | undefined) => void>();
+  private readonly clipsIn = new Map<string, { parts: string[]; seconds: number; lang?: string }>();
   private stopScribeTalk: (() => void) | undefined;
   /** The demo's friends whose made-up voices are playing. */
   private readonly demoVoices = new Set<string>();
+  /** A demo friend pointing at the shared screen (as the network would bring it: a few times a second). */
+  private stopDemoPointer: (() => void) | undefined;
   private mic: MediaStream | undefined;
+  /** The microphone and speaker you picked (BLG-737), remembered on this Mac; undefined: macOS's own. */
+  private micId: string | undefined = readPref(MIC_PREF);
+  private speakerId: string | undefined = readPref(SPEAKER_PREF);
   private micAsked: Promise<MediaStream | undefined> | undefined;
   /** Bumped when a call ends: a microphone that opens after that is stopped at once, not kept. */
   private micToken = 0;
@@ -120,6 +129,53 @@ export class CallEngine {
 
   private get me(): string {
     return this.client.store.getState().network.self?.peerId ?? '';
+  }
+
+  /** The microphones and speakers on this Mac, and which ones the call uses (BLG-737). */
+  async devices(): Promise<AudioDevices> {
+    const all = await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [];
+    const named = (kind: MediaDeviceKind): AudioDevice[] =>
+      all.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications').map((d, i) => ({ id: d.deviceId, label: d.label || (kind === 'audioinput' ? `Microphone ${i + 1}` : `Speaker ${i + 1}`) }));
+    return {
+      mics: named('audioinput'),
+      speakers: named('audiooutput'),
+      ...(this.micId ? { mic: this.micId } : {}),
+      ...(this.speakerId ? { speaker: this.speakerId } : {}),
+      canPickSpeaker: typeof (HTMLMediaElement.prototype as { setSinkId?: unknown }).setSinkId === 'function',
+    };
+  }
+
+  /** Use this microphone (undefined: macOS's own) from now on; in a call, the others hear it at once. */
+  async pickMic(id: string | undefined): Promise<void> {
+    this.micId = id;
+    writePref(MIC_PREF, id);
+    if (!this.view || this.view.demo || !this.mic) return;
+    const token = this.micToken;
+    try {
+      const next = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(id) });
+      if (token !== this.micToken || !this.view) {
+        next.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const old = this.mic;
+      this.mic = next;
+      this.micAsked = Promise.resolve(next);
+      this.applyMute(this.view);
+      const track = next.getAudioTracks()[0];
+      for (const p of this.peers.values()) void p.setMic(track);
+      this.levels.watch(this.me, next);
+      this.scribe?.listen(next);
+      old?.getTracks().forEach((t) => t.stop());
+    } catch {
+      this.patch({ problem: 'Couldn’t switch to that microphone. Check it’s plugged in, then pick it again.' });
+    }
+  }
+
+  /** Play everyone's voices on this speaker (undefined: macOS's own). */
+  pickSpeaker(id: string | undefined): void {
+    this.speakerId = id;
+    writePref(SPEAKER_PREF, id);
+    for (const el of this.audio.values()) sink(el, id);
   }
 
   /** Start a call here, leaving any other one first. */
@@ -220,68 +276,88 @@ export class CallEngine {
   /** Notes are possible when someone in the call (you too) has a voice model; paused stays paused. */
   private notesState(): void {
     if (!this.view || this.view.demo) return;
-    if (this.live.notes === 'off') return;
     const others = new Set(this.view.people.filter((p) => !p.me).map((p) => p.peerId));
-    const anyone = Boolean(this.scribe?.ready) || [...this.scribes.values()].some((st) => st.ready && others.has(st.by));
-    const next = anyone ? 'on' : 'none';
+    // Who writes with what (BLG-738): each Mac's best model for the call's language, for the Notes button to say.
+    const language = this.scribe?.language();
+    const lang = language ?? 'auto';
+    const writers: Record<string, VoiceModelId> = {};
+    if (this.scribe) {
+      const mine = bestModel(this.scribe.models, lang)?.model;
+      if (mine) writers[this.me] = mine;
+    }
+    for (const st of this.scribes.values()) {
+      const theirs = st.ready && others.has(st.by) ? (st.models ? bestModel(st.models, lang)?.model : 'whisper-turbo') : undefined;
+      if (theirs) writers[st.by] = theirs;
+    }
+    const scribing = { writers, ...(language ? { language } : {}) };
+    if (JSON.stringify(scribing) !== JSON.stringify(this.live.scribing)) this.patch({ scribing });
+    if (this.live.notes === 'off') return;
+    const next = Object.keys(writers).length ? 'on' : 'none';
     if (next !== this.live.notes) this.patch({ notes: next });
   }
 
-  /** Who writes down a phrase of yours: 'me', another Mac in the call, or nobody (BLG-718). */
-  private route = (seconds: number): string | undefined => {
+  /** Who writes down a phrase of yours in `lang`: 'me', another Mac in the call, or nobody (BLG-718, BLG-738). */
+  private route = (seconds: number, lang: string): string | undefined => {
     const view = this.view;
     if (!view) return undefined;
     const here = new Set(view.people.filter((p) => !p.me).map((p) => p.peerId));
     const statuses = [...(this.scribe ? [this.scribe.status(this.me)] : []), ...[...this.scribes.values()].filter((st) => here.has(st.by) && this.peers.has(st.by))];
-    const who = pickScribe(this.me, statuses, seconds);
+    const who = pickScribe(this.me, statuses, seconds, lang);
     return who === this.me ? 'me' : who;
   };
 
   /** Send a phrase to the Mac that writes it down; its words come back (or nothing, after a while). */
-  private delegate = (to: string, clip: { readonly id: string; readonly wav: string; readonly seconds: number }): Promise<string | undefined> => {
+  private delegate = (to: string, clip: { readonly id: string; readonly wav: string; readonly seconds: number; readonly lang: string }): Promise<Words | undefined> => {
     const peer = this.peers.get(to);
     if (!peer) return Promise.resolve(undefined);
     const parts = Math.ceil(clip.wav.length / CLIP_PART);
-    for (let i = 0; i < parts; i++) peer.sendStage(JSON.stringify({ k: 'clip', by: this.me, id: clip.id, part: i, parts, seconds: clip.seconds, b64: clip.wav.slice(i * CLIP_PART, (i + 1) * CLIP_PART) }));
+    for (let i = 0; i < parts; i++) peer.sendStage(JSON.stringify({ k: 'clip', by: this.me, id: clip.id, part: i, parts, seconds: clip.seconds, lang: clip.lang, b64: clip.wav.slice(i * CLIP_PART, (i + 1) * CLIP_PART) }));
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.clipsOut.delete(`${to}:${clip.id}`);
         resolve(undefined);
       }, 90_000);
-      this.clipsOut.set(`${to}:${clip.id}`, (text) => {
+      this.clipsOut.set(`${to}:${clip.id}`, (words) => {
         clearTimeout(timer);
         this.clipsOut.delete(`${to}:${clip.id}`);
-        resolve(text || undefined);
+        resolve(words?.text ? words : undefined);
       });
     });
   };
 
-  /** Words this Mac wrote down for another's phrase go back to it. */
-  private giveBack = (to: string, id: string, text: string): void => {
-    this.peers.get(to)?.sendStage(JSON.stringify({ k: 'clip-text', by: this.me, id, text }));
+  /** Words this Mac wrote down for another's phrase go back to it, with the language they came out in. */
+  private giveBack = (to: string, id: string, words: Words): void => {
+    this.peers.get(to)?.sendStage(JSON.stringify({ k: 'clip-text', by: this.me, id, text: words.text, ...(words.lang ? { lang: words.lang } : {}) }));
+  };
+
+  /** What the other Macs in the call heard, by language (for the call's language, shared/call-language.ts). */
+  private heard = (): LanguageCount[] => {
+    const here = new Set(this.view?.people.filter((p) => !p.me).map((p) => p.peerId) ?? []);
+    return [...this.scribes.values()].filter((st) => here.has(st.by) && st.langs).map((st) => st.langs!);
   };
 
   /** A part of someone's phrase: once all are here, it waits to be written down (or goes back empty with no model). */
   private clipPart(from: string, m: Extract<StageMessage, { k: 'clip' }>): void {
     const key = `${from}:${m.id}`;
-    const got = this.clipsIn.get(key) ?? { parts: new Array<string>(m.parts).fill(''), seconds: m.seconds };
+    const got = this.clipsIn.get(key) ?? { parts: new Array<string>(m.parts).fill(''), seconds: m.seconds, ...(m.lang ? { lang: m.lang } : {}) };
     got.parts[m.part] = m.b64;
     this.clipsIn.set(key, got);
     if (got.parts.some((p) => !p)) return;
     this.clipsIn.delete(key);
-    if (!this.scribe?.ready) return this.giveBack(from, m.id, '');
-    this.scribe.serve(from, m.id, got.parts.join(''), got.seconds);
+    if (!this.scribe?.ready) return this.giveBack(from, m.id, { text: '' });
+    this.scribe.serve(from, m.id, got.parts.join(''), got.seconds, got.lang);
   }
 
   /** Start the scribe for a call: it records your words, and writes down yours and others' when it's the Mac for it. */
   private async startScribe(call: CallView, mic: MediaStream | undefined): Promise<void> {
-    const ready = await scribeReady(this.client);
+    const models = await scribeModels(this.client);
     if (this.view?.id !== call.id) return;
-    this.scribe = new Scribe(this.client, { route: this.route, delegate: this.delegate, giveBack: this.giveBack }, ready);
+    this.scribe = new Scribe(this.client, { route: this.route, delegate: this.delegate, giveBack: this.giveBack, heard: this.heard }, models);
     this.scribe.start(mic);
     // Every few seconds, each Mac says how it does as a scribe: the others route their phrases by it.
     const say = (): void => {
       if (this.scribe) this.stageSend({ k: 'scribe', ...this.scribe.status(this.me) });
+      this.notesState();
     };
     say();
     this.stopScribeTalk = repeat(say, 4_000);
@@ -328,6 +404,14 @@ export class CallEngine {
     for (const fn of this.stageSubs) fn(m);
   }
 
+  /** Where your pointer is, for everyone (often: on the fast channel where there is one). */
+  pointerSend(m: Extract<StageMessage, { k: 'laser' }>): void {
+    const text = JSON.stringify(m);
+    // Stopping must arrive: it goes the sure way.
+    for (const p of this.peers.values()) (m.x < 0 ? p.sendStage(text) : p.sendPointer(text));
+    for (const fn of this.stageSubs) fn(m);
+  }
+
   onStage(fn: StageListener): () => void {
     this.stageSubs.add(fn);
     return () => void this.stageSubs.delete(fn);
@@ -357,7 +441,7 @@ export class CallEngine {
   private openMic(): Promise<MediaStream | undefined> {
     const token = this.micToken;
     this.micAsked ??= navigator.mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48_000 } })
+      .getUserMedia({ audio: micConstraints(this.micId) })
       .then((s) => {
         // The call ended while macOS asked: this microphone isn't wanted any more.
         if (token !== this.micToken) {
@@ -451,6 +535,8 @@ export class CallEngine {
     this.myView = { big: [], visible: false };
     this.uplink = this.uplinkSaid = undefined;
     this.demoVoices.clear();
+    this.stopDemoPointer?.();
+    this.stopDemoPointer = undefined;
     this.cam?.getTracks().forEach((t) => t.stop());
     this.cam = undefined;
     if (this.live.theater) void this.setTheater(false);
@@ -600,6 +686,8 @@ export class CallEngine {
           if (!m || m.by !== peerId) return;
           if (m.k === 'streams') {
             this.kinds.set(peerId, { ...(m.cam ? { cam: m.cam } : {}), ...(m.screen ? { screen: m.screen } : {}) });
+            const line = this.peers.get(peerId);
+            if (line) line.pointersOk = Boolean(m.pointers);
             return this.reconcile();
           }
           if (m.k === 'view') {
@@ -612,7 +700,7 @@ export class CallEngine {
             return this.notesState();
           }
           if (m.k === 'clip') return this.clipPart(peerId, m);
-          if (m.k === 'clip-text') return this.clipsOut.get(`${peerId}:${m.id}`)?.(m.text);
+          if (m.k === 'clip-text') return this.clipsOut.get(`${peerId}:${m.id}`)?.({ text: m.text, ...(m.lang ? { lang: m.lang } : {}) });
           if (m.k === 'mode') {
             // Only the sharer's word counts; the relays follow it too.
             if (this.view && sharerOf(this.view)?.peerId === peerId) this.patch({ mode: m.mode });
@@ -654,6 +742,7 @@ export class CallEngine {
       this.audio.set(peerId, el);
     }
     el.srcObject = stream;
+    sink(el, this.speakerId);
     void el.play().catch(() => undefined);
   }
 
@@ -714,6 +803,17 @@ export class CallEngine {
     else if (sharer.me) stage = this.screen ? { by: sharer.peerId, stream: this.screen } : undefined;
     else if (stage?.by !== sharer.peerId) stage = { by: sharer.peerId, stream: demoScreen(sharer.name) };
     if (JSON.stringify(lines) !== JSON.stringify(this.live.lines) || stage !== this.live.stage) this.patch({ lines, stage });
+    // Someone who isn't sharing points at it, the way pointers come over a real network.
+    const pointer = stage ? call.people.find((p) => !p.me && !p.sharing) : undefined;
+    if (pointer && !this.stopDemoPointer) {
+      this.stopDemoPointer = repeat(() => {
+        const [x, y] = demoPointer(performance.now());
+        for (const fn of this.stageSubs) fn({ k: 'laser', by: pointer.peerId, x, y });
+      }, 60);
+    } else if (!pointer && this.stopDemoPointer) {
+      this.stopDemoPointer();
+      this.stopDemoPointer = undefined;
+    }
   }
 }
 
@@ -721,6 +821,53 @@ export class CallEngine {
 function sameKeys(a: Readonly<Record<string, MediaStream>>, b: Readonly<Record<string, MediaStream>>): boolean {
   const ka = Object.keys(a);
   return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
+}
+
+/** A microphone or speaker on this Mac. */
+export interface AudioDevice {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface AudioDevices {
+  readonly mics: readonly AudioDevice[];
+  readonly speakers: readonly AudioDevice[];
+  /** The ones in use (undefined: macOS's own). */
+  readonly mic?: string;
+  readonly speaker?: string;
+  /** WebKit can send sound to a speaker other than macOS's own. */
+  readonly canPickSpeaker: boolean;
+}
+
+const MIC_PREF = 'beluga.call.mic';
+const SPEAKER_PREF = 'beluga.call.speaker';
+
+function readPref(key: string): string | undefined {
+  try {
+    return localStorage.getItem(key) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writePref(key: string, value: string | undefined): void {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {
+    // Private storage off: the choice lasts until Beluga restarts.
+  }
+}
+
+/** Your voice, cleaned up, from the microphone you picked (if it's gone, macOS's own). */
+function micConstraints(id: string | undefined): MediaTrackConstraints {
+  return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48_000, ...(id ? { deviceId: { ideal: id } } : {}) };
+}
+
+/** Send a voice to a speaker, where WebKit allows it. */
+function sink(el: HTMLMediaElement, id: string | undefined): void {
+  const media = el as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
+  if (typeof media.setSinkId === 'function') void media.setSinkId(id ?? '').catch(() => undefined);
 }
 
 let engine: CallEngine | undefined;
