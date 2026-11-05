@@ -337,7 +337,7 @@ Columns: **Core** is the API method or intent it uses; **Mac** is where you find
 | `workbench.setModel` | ✓ (the composer's agent picker: a model of the same runtime, for this conversation or new ones; the phone's picker since 1.32) |
 | `workbench.setAgent` | ✓ (the agent picker's other runtimes, grouped Claude › Codex › Local model; a runtime this Mac doesn't run is greyed with why; the phone's picker since 1.32) |
 | `workbench.createPr` | ✓ |
-| `workbench.quickPr` | ✓ the toolbar's Create PR (and Create Draft PR under its chevron), the Changes panel's Create PR |
+| `workbench.quickPr` | ✓ the toolbar's Create PR (and Create Draft PR under its chevron; in a fork, Create PR on the original too: pushed to the fork, opened on the repository it was forked from), the Changes panel's Create PR |
 | `workbench.mergeToBase` | ✓ the branch control's chevron › Merge into main… (no PR yet, on GitHub): asks first, then lands the branch on origin's base and pushes |
 | `workbench.gitFix` | ✓ the GitHub trouble card that a failed Create PR, Merge or Update Branch opens (Push over HTTPS, Log In to GitHub, Install GitHub CLI, the SSH steps under •••) |
 | `workbench.signInClaude` | ✓ Sign In on a failed Claude card that says Claude Code isn’t signed in or its sign-in expired: a menu of a Claude subscription, an Anthropic Console account (runs `claude auth login --claudeai` or `--console` in a shell, then Claude continues) or a 3rd-party platform (opens its setup page) |
@@ -615,6 +615,8 @@ Columns: **Core** is the API method or intent it uses; **Mac** is where you find
 | `git.moveAndUpdate` | ✓ the “changes in the way” alert › Move to Worktree |
 | `git.switchToDefault` | ✓ “The main folder is on feat/…” › Switch to main (clean; or Move to Worktree / Bring Them Along) |
 | `git.askClaude` | ✓ Let Your Agent Handle It (also on “Couldn’t fetch”): a worktree of its own for a failing fetch or diverged history; for what’s stuck in the main folder’s files, a conversation in its Questions whose run may only sync git (banner “Your agent is updating main”) |
+| `git.syncFork` | ✓ Sync Fork on a fork's project home (shown when the original has new commits: “3 new on rstagi/app”): GitHub brings them into the fork's main, then Update main runs here |
+| `git.syncForkWithClaude` | ✓ “Your fork and the original conflict” › Let Your Agent Handle It: a worktree where your agent merges the original in and opens a PR into the fork |
 | `git.github` | ✓ the GitHub row on a project's home: GitHub ↗, Private/Public, people, open PRs, stars (through gh, cached an hour; Connect GitHub when gh isn't set up) |
 | `git.githubRepo` | ✓ Open on GitHub in a project's right-click and ⋯ menus |
 | `git.log` | ✓ History: a project home's latest commits, the History page (Show All) and the panel's History tab (⌥⌘5), as a graph |
