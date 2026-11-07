@@ -1261,6 +1261,12 @@ export class WorkspaceManager {
     this.patchRecord(id, { mergeWhenReady: wait });
   }
 
+  /** Remind you of a conversation then (epoch ms), quiet till then; undefined: not anymore. */
+  setRemindAt(id: string, at: number | undefined): void {
+    this.require(id);
+    this.patchRecord(id, { remindAt: at });
+  }
+
   setModel(id: string, model: string | undefined): void {
     this.require(id);
     this.patchRecord(id, { model: model || undefined });
