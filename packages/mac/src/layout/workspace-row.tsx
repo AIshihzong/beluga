@@ -16,6 +16,7 @@ import { askBeforeWork } from '../lib/work-confirm.js';
 import { isPlanAction, runPlanAction } from '../lib/plan-task.js';
 import { Row } from './sidebar-parts.js';
 import { outsideLocation } from './outside-model.js';
+import { useChatSelection } from './chat-selection-view.js';
 import { isAgentWorktree } from '../claude-code/subagents-model.js';
 import s from './Sidebar.module.css';
 import o from './other-worktrees.module.css';
@@ -99,6 +100,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({ ws, indent, fold }: { w
   const { client } = useBeluga();
   const [renaming, setRenaming] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const selection = useChatSelection();
+  const inSelection = ws.kind === 'chat' && Boolean(selection?.ids.includes(ws.id));
   // Only what the row shows: another conversation streaming doesn't draw it again (KLD-48).
   const { selected, st, signal, where, archiving } = useApp(
     (state) => ({
@@ -146,11 +149,14 @@ export const WorkspaceRow = memo(function WorkspaceRow({ ws, indent, fold }: { w
   // Put off till later: a quiet clock instead (what waits there shows when it reminds you).
   const quiet = signal.remindAt ? <LaterMark /> : st.tone === 'warn' || st.tone === 'info' || st.tone === 'error' ? <DotMark tone={st.tone} /> : null;
   return (
-    <ActionsContext items={() => workspaceItems(client.store.getState(), ws, actions.run, () => setRenaming(true), { run: () => void regenerateTitle(), pending: regenerating }, (at) => remindWorkspaceLater(client, ws, at))}>
+    <ActionsContext items={() => inSelection && selection ? selection.items() : workspaceItems(client.store.getState(), ws, actions.run, () => setRenaming(true), { run: () => void regenerateTitle(), pending: regenerating }, (at) => remindWorkspaceLater(client, ws, at))}>
       <Row
         indent={indent}
-        selected={selected}
-        className={signalClass(signal, selected)}
+        selected={inSelection || selected}
+        className={cx(signalClass(signal, selected), inSelection && s.chatSelected)}
+        data-chat-id={ws.kind === 'chat' ? ws.id : undefined}
+        data-chat-selected={inSelection || undefined}
+        aria-pressed={ws.kind === 'chat' ? inSelection : undefined}
         data-signal-row={signal.level}
         data-kind={ws.kind}
         // Named for itself alone (so it's found by name whatever it waits on); the tooltip says the rest.
@@ -200,7 +206,13 @@ export const WorkspaceRow = memo(function WorkspaceRow({ ws, indent, fold }: { w
           )
         }
         detail={archiving ? `${ws.name}: ${ARCHIVING[archiving]}` : `${ws.name}: ${signal.tip || st.label}${fold ? ` · ${fold.summary}` : ''}${where ? `\n${where.path}` : ''}`}
-        onClick={() => actions.run({ type: 'open_ws', id: ws.id })}
+        onClick={(event) => {
+          if (ws.kind === 'chat' && selection?.click(ws.id, event.shiftKey)) {
+            event.preventDefault();
+            return;
+          }
+          actions.run({ type: 'open_ws', id: ws.id });
+        }}
         trailing={
           archiving ? (
             <span className={s.archiving} data-archiving={archiving}>Archiving…</span>
