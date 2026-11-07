@@ -99,9 +99,10 @@ export const HANDLERS = {
   },
 
   'host.answerApproval': (s, answer, id) => s.answerApproval(answer, id),
-  'host.promote': (s, requestId) => s.host.promote(requestId),
+  'host.promote': (s, requestId, opts) => s.host.promote(requestId, opts),
   'host.sendNext': (s, requestId) => s.host.sendNext(requestId),
   'host.steerNow': (s, requestId) => s.host.steerNow(requestId),
+  'host.cancelSteer': (s, requestId) => s.host.cancelSteer(requestId),
   'host.stopRun': (s, channel) => s.host.stopRun(channel),
   'host.cancelQueued': (s, requestId) => s.host.cancelQueued(requestId),
   'host.reorderQueued': (s, requestId, index) => s.host.reorderQueued(requestId, index),
