@@ -23,6 +23,7 @@ import { launchSentinel } from '../core/sentinel/launch.js';
 import { launchTriage, sendAutomatic } from '../core/triage/launch.js';
 import { AutoContinue } from '../core/auto-continue.js';
 import { launchAssistant } from '../core/assistant/launch.js';
+import { launchThreads, threadsOf } from '../core/threads/launch.js';
 import { launchChat } from '../core/chat/launch.js';
 import { launchCalls } from '../core/calls/launch.js';
 import { launchGateway } from '../core/gateway/launch.js';
@@ -367,6 +368,7 @@ export async function buildCore(input: Config, hooks: CoreHooks, opts: { readonl
   let stopTriage = (): void => undefined;
   let stopAutoContinue = (): void => undefined;
   let stopAssistant = (): void => undefined;
+  let stopThreads = (): void => undefined;
   let stopCompanion = async (): Promise<void> => undefined;
   const start = (): void => {
     session.start();
@@ -399,11 +401,20 @@ export async function buildCore(input: Config, hooks: CoreHooks, opts: { readonl
     if (opts.network) stopSentinel = launchSentinel({ session, store, demo: Boolean(demo) });
     // A run that stopped on your usage limit is told to continue once the limit resets (shared/auto-continue.ts).
     if (opts.network) {
-      const auto = new AutoContinue({ store, ask: (prompt, channel) => sendAutomatic(session, () => session.askOwnClaude(prompt, channel, true)), warn: (text) => console.warn(text) });
+      // A child thread (core/threads) a stop reached is not sent on; one it sends on owes that turn to its parent.
+      const auto = new AutoContinue({
+        store,
+        ask: (prompt, channel) => sendAutomatic(session, () => session.askOwnClaude(prompt, channel, true)),
+        warn: (text) => console.warn(text),
+        skip: (channel) => threadsOf(session)?.skipsContinue(channel) ?? false,
+        sent: (channel, requestId) => threadsOf(session)?.limitContinued(channel, requestId),
+      });
       stopAutoContinue = () => auto.stop();
     }
     // "Your Mac": one conversation with your Claude for the whole Mac, from the phone and the sidebar (core/assistant).
     if (opts.network) stopAssistant = launchAssistant({ session, store, demo: Boolean(demo) });
+    // Child threads your agents start (core/threads): the tools show only with prefs.agentThreads on.
+    if (opts.network) stopThreads = launchThreads(session);
     if (opts.network) stopClaudeCode = launchClaudeCode({ session, store, demo: Boolean(demo), notify: (e) => session.notifier.notify(e) });
     // Your phone (docs/companion.md): pairing it, and its link. Its DHT node runs only while a phone is paired or a pairing is open.
     if (opts.network) stopCompanion = launchCompanion({ session, store, identity, terminals, demo: Boolean(demo), log: (line) => console.warn(line) });
@@ -446,6 +457,7 @@ export async function buildCore(input: Config, hooks: CoreHooks, opts: { readonl
     stopChat();
     stopFriendShares();
     stopAssistant();
+    stopThreads();
     stopSentinel();
     stopTriage();
     stopAutoContinue();
