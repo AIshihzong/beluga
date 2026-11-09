@@ -18,7 +18,7 @@ import { COMPANION_HANDLERS } from '../src/ipc/companion-handlers.js';
 import { SocketClient } from '../src/ipc/socket-client.js';
 import { generateIdentity } from '../src/net/crypto.js';
 import { globalShellId, isGlobalShell } from '../src/shared/terminal-keys.js';
-import { TerminalManager } from '../src/terminal/pty-host.js';
+import { type PtyProcess, TerminalManager } from '../src/terminal/pty-host.js';
 import { waitFor } from './helpers.js';
 import { posixSh } from '../src/terminal/pty.js';
 
@@ -54,6 +54,9 @@ async function setup() {
   store.dispatch({ type: 'identity', selfId: identity.peerId, isHost: true });
   store.dispatch({ type: 'projects', projects: [{ id: 'p1', name: 'landing', root: dir, base: 'main', workspaces: [{ id: 'w1', projectRoot: dir, projectId: 'p1', name: 'auth', path: wt, kind: 'worktree', branch: 'beluga/auth', createdAt: 1, external: false }] }] as never });
   const terminals = new TerminalManager();
+  // Every shell started, closed ones too: closing forgets a shell before it has exited.
+  const started: PtyProcess[] = [];
+  terminals.onOpen((p) => started.push(p));
   const macCalls: string[] = [];
   // The daemon's terminals API, as handlers.ts runs it through the workbench (a shell per worktree, at the Mac's size).
   const open = (key: string, cwd: string) => {
@@ -101,12 +104,10 @@ async function setup() {
   attachCompanion(session, host);
   cleanup.push(async () => {
     await host.stop();
-    // The shells end first, and are waited for (closing forgets them at once): Windows holds a
+    // The shells end first, and are waited for, the ones the test closed too: Windows holds a
     // shell's folder until it has really exited, and a moment after (BLG-728).
-    const shells = terminals.list().filter((p) => !p.exited);
-    const ended = shells.map((p) => new Promise<void>((resolve) => p.onExit(() => resolve())));
-    for (const p of shells) p.kill();
-    await Promise.race([Promise.all(ended), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+    for (const p of started) p.kill();
+    await waitFor(() => started.every((p) => p.exited), 10_000).catch(() => undefined);
     terminals.closeAll();
     rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
@@ -225,7 +226,9 @@ describe('a worktree’s terminal on the phone, shared with the Mac', () => {
     phone.termAttach('w1');
     const status = await waitFor(() => frames.find((f) => f.t === 'term_status' && f.term === 'w1'), 5_000);
     expect(status).toMatchObject({ running: true, cols: 100, rows: 30 });
-    await waitFor(() => outputOf(frames, 'w1').includes('$ '), 10_000);
+    // The screen so far comes first, from a clean start. Not waiting for the prompt: Windows' console
+    // can hold a new shell's first output back, and what's typed now waits for the shell anyway.
+    await waitFor(() => frames.find((f) => f.t === 'term_data' && f.term === 'w1'), 5_000);
     expect(frames.find((f) => f.t === 'term_data')).toMatchObject({ reset: true });
 
     // The phone types: the Mac sees the command's output too.
