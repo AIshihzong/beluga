@@ -116,6 +116,17 @@ describe('event-loop delay', () => {
     expect(resets).toBe(4);
   });
 
+  it('reads a live idle loop far below its sampling interval', async () => {
+    const lines: string[] = [];
+    const stop = watchEventLoop((l) => void lines.push(l), { everyMs: 300, all: true });
+    await wait(350);
+    stop();
+    const p50 = Number(/p50 ([\d.]+) ms/.exec(lines[0] ?? '')?.[1]);
+    // Far below the 300 ms period, on any machine: not how idle it is (Windows' timers alone read
+    // ~16-32 ms, a busy runner more), which the test above checks on fixed numbers.
+    expect(p50).toBeLessThan(100);
+  });
+
   it('counts a period as slow when its p95 or one stall is long', () => {
     expect(isSlow({ p50: 1, p95: 1.3, max: 90 })).toBe(false);
     expect(isSlow({ p50: 1, p95: 60, max: 90 })).toBe(true);

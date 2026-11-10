@@ -104,12 +104,20 @@ async function setup() {
   attachCompanion(session, host);
   cleanup.push(async () => {
     await host.stop();
-    // The shells end first, and are waited for, the ones the test closed too: Windows holds a
-    // shell's folder until it has really exited, and a moment after (BLG-728).
-    for (const p of started) p.kill();
+    // The shells end first, and are all waited for, the ones the test closed too (closing forgets
+    // them at once): Windows holds a shell's folder until it has really exited, and a moment after
+    // (BLG-728). One closed already is never killed again: a second kill of a disposed pty can crash
+    // the worker there.
+    const live = new Set(terminals.list());
+    for (const p of started) if (live.has(p) && !p.exited) p.kill();
     await waitFor(() => started.every((p) => p.exited), 10_000).catch(() => undefined);
     terminals.closeAll();
-    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    } catch (err) {
+      // A temp folder Windows still holds (a closed shell still exiting) is left for it to clear, never a failed test.
+      if (process.platform !== 'win32') throw err;
+    }
   });
   await host.start();
 
@@ -233,7 +241,8 @@ describe('a worktree’s terminal on the phone, shared with the Mac', () => {
 
     // The phone types: the Mac sees the command's output too.
     phone.termInput('w1', 'echo from-the-$((40+2))-phone\r');
-    await waitFor(() => outputOf(frames, 'w1').includes('from-the-42-phone'), 10_000);
+    // The run's first shell: Git Bash on a busy Windows runner can take a while to start.
+    await waitFor(() => outputOf(frames, 'w1').includes('from-the-42-phone'), 30_000);
     await waitFor(() => macSaw.includes('from-the-42-phone'), 10_000);
 
     // The Mac types: the phone sees it.
